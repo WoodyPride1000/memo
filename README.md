@@ -85,7 +85,55 @@ This temporarily transforms the DTN into a high-delivery emergency network.
 
 ## 3. Packet Header Extension
 
-### FLAGS Field
+### 3.1 Packet Structure
+
+| Field    | Size | Initial Value | Description                        |
+| -------- | ---- | ------------- | ---------------------------------- |
+| VER      | 1B   | 0x03          | Protocol version                   |
+| FLAGS    | 1B   | —             | Feature flags (see Section 3.2)    |
+| TTL      | 1B   | 3 or 8        | Time-To-Live hop limit             |
+| HopCount | 1B   | 0             | Incremented by each relay node     |
+| USER ID  | 3B   | —             | Unique device identifier           |
+| LAT      | 4B   | —             | Latitude × 1,000,000 (int32)       |
+| LON      | 4B   | —             | Longitude × 1,000,000 (int32)      |
+| TS       | 4B   | —             | Unix timestamp (uint32)            |
+| SEQ      | 4B   | 0             | Monotonically increasing (uint32)  |
+| SALT     | 8B   | —             | CSPRNG random nonce                |
+| HMAC     | 16B  | —             | HMAC-SHA256/128 or GCM Tag         |
+
+**Total: 46 bytes** — ~37 ms at 10 kbps.
+
+### TTL and HopCount Behavior
+
+TTL (Time-To-Live) is set by the originating device and decremented by each relay node.
+A packet with TTL = 0 MUST be silently discarded and not forwarded.
+
+HopCount is initialized to 0 by the originating device and incremented by each relay node.
+It provides a live traversal count useful for debugging and loop detection.
+
+Forwarding rule applied by every relay node:
+
+```
+if TTL > 0:
+    TTL      -= 1
+    HopCount += 1
+    forward(packet)
+else:
+    discard(packet)
+```
+
+TTL initial values by mode:
+
+* Normal mode (REALTIME = 0): TTL = 3
+* Emergency mode (REALTIME = 1): TTL = 8
+
+> **Important:** TTL and HopCount are modified by relay nodes and MUST NOT be included
+> in the HMAC input. The HMAC is computed over:
+> `VER || FLAGS || UID || LAT || LON || TS || SEQ || SALT`
+
+---
+
+### 3.2 FLAGS Field
 
 | Bit | Name        | Description                      |
 | --- | ----------- | -------------------------------- |
@@ -217,8 +265,10 @@ compliant with RFC 2104 (HMAC) and NIST SP 800-107 (truncation guidance).
 Input:
 
 ```
-VER || UID || LAT || LON || TS || SEQ || SALT
+VER || FLAGS || UID || LAT || LON || TS || SEQ || SALT
 ```
+
+> Note: TTL and HopCount are excluded from HMAC input as they are modified by relay nodes.
 
 Output:
 
@@ -268,7 +318,7 @@ random number generator (CSPRNG).
 Per-device subkeys are derived using HKDF (RFC 5869):
 
 ```
-DeviceKey = HKDF-SHA256(MasterKey, salt=UID, info="OLTP-v2")
+DeviceKey = HKDF-SHA256(MasterKey, salt=UID, info="OLTP-v3")
 ```
 
 This ensures that compromise of one device key does not expose other devices.
@@ -389,9 +439,9 @@ OpenMesh is intended to become a lightweight, infrastructure-independent IoT tra
 
 | Configuration          | Size     | 10 kbps transmission time |
 | ---------------------- | -------- | ------------------------- |
-| AUTH only (HMAC-16B)   | 36 bytes | ~29 ms                    |
-| AUTH + ENCRYPT (GCM)   | 52 bytes | ~42 ms                    |
-| Full 32B HMAC (no GCM) | 52 bytes | ~42 ms                    |
+| AUTH only (HMAC-16B)   | 46 bytes | ~37 ms                    |
+| AUTH + ENCRYPT (GCM)   | 62 bytes | ~50 ms                    |
+| Full 32B HMAC (no GCM) | 62 bytes | ~50 ms                    |
 
 All configurations are practical for 10 kbps low-power radio links.
 
@@ -401,6 +451,10 @@ All configurations are practical for 10 kbps low-power radio links.
 
 | Version | Change                                                                 |
 | ------- | ---------------------------------------------------------------------- |
+| 3.0     | Added TTL (1B) and HopCount (1B) fields to packet header (Section 3.1) |
+| 3.0     | Defined TTL/HopCount forwarding rules and HMAC exclusion rationale     |
+| 3.0     | FLAGS field moved to Section 3.2; packet structure table added         |
+| 3.0     | HKDF info string updated to "OLTP-v3"                                  |
 | 2.0     | Added Section 7.2 (AES-128-GCM encryption spec)                        |
 | 2.0     | Added Section 7.3 (Key management, rotation, revocation)               |
 | 2.0     | SEQ field expanded to 32-bit; rollover policy defined (Section 8)      |
